@@ -24,10 +24,25 @@ import java.util.Properties;
 @SuppressWarnings("serial")
 public class TrafficLSTMJob {
     public static void main(String[] args) throws Exception {
-        // Define constants at start of program
-        MultiLayerNetwork lstm = KerasModelImport.importKerasSequentialModelAndWeights("/home/ben/git/research/TrafficPrediction/lstm_model.h5");
-        double scale_ = 0.0014925373134328358;
-        double min_ = -0.03880597014925373;
+        ParameterTool parameter = ParameterTool.fromArgs(args);
+        final String config_file_path = parameter.get("config");
+
+        ParameterTool params = ParameterTool.fromPropertiesFile(config_file_path);
+
+        // Level of parallelism
+        final int parallelism = params.getInt("parallelism", 1);
+
+        // Neural Net Configuration
+        final String h5path = params.get("h5Path");
+        double scale_ = params.getDouble("scale_", 0.0014925373134328358);
+        MultiLayerNetwork lstm = KerasModelImport.importKerasSequentialModelAndWeights(h5path);
+
+
+        // Kafka Configuration
+        final String bootstrap_servers = params.get("bootstrap.servers", "localhost:9092");
+        final String zookeeper_connect = params.get("zookeeper.connect", "localhost:2181");
+        final String consumer_topic = params.get("consumer_topic", "input");
+        final String producer_topic = params.get("producer_topic", "output");
 
         Properties properties = new Properties();
         properties.setProperty("bootstrap.servers", "localhost:9092");
@@ -35,6 +50,11 @@ public class TrafficLSTMJob {
 
         // Verify that we've loaded the LSTM and print its summary
         System.out.println("Loaded lstm at " + lstm.summary());
+
+        System.out.println("bootstrap.servers is " + bootstrap_servers);
+        System.out.println("zookeeper_connect is " + zookeeper_connect);
+        System.out.println("consumer_topic is " + consumer_topic);
+        System.out.println("producer_topic is " + producer_topic);
 
 
         // get the execution environment
@@ -56,6 +76,7 @@ public class TrafficLSTMJob {
                         for (int i = 0; i < 12; i++) {
                             actual_flows[i] = Integer.parseInt(split[i]);
                         }
+                        System.out.println("Received something : " + value.toString());
                         out.collect(new FlowsWithTimestamp(actual_flows, 0, timestamp));
                     }
                 })
@@ -90,8 +111,6 @@ public class TrafficLSTMJob {
                         // Get the right index and cast to an int
                         predicted_flow = prediction.getDouble(11);
 
-                        System.out.println("Timestamp is : " + flowsWithTimestamp.timestamp);
-
                         // Create new return object, return
                         FlowsWithTimestamp ret = new FlowsWithTimestamp(flowsWithTimestamp.actual_flows, (int) predicted_flow, flowsWithTimestamp.timestamp);
                         return ret;
@@ -99,7 +118,7 @@ public class TrafficLSTMJob {
                 });
 
         // Print the results and specify the level of parallelism
-        flows.print().setParallelism(1);
+        flows.print().setParallelism(parallelism);
 
         flows.map(new MapFunction<FlowsWithTimestamp, String>() {
             @Override
