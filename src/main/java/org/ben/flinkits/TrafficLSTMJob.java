@@ -7,6 +7,7 @@ import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
+import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer011;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer011;
@@ -59,6 +60,7 @@ public class TrafficLSTMJob {
         FlinkKafkaConsumer011<String> consumer = new FlinkKafkaConsumer011(consumer_topic, new SimpleStringSchema(), properties);
         FlinkKafkaProducer011<String> producer = new FlinkKafkaProducer011(bootstrap_servers, producer_topic, new SimpleStringSchema());
         DataStream<String> dataStream = env.addSource(consumer);
+        ((DataStreamSource<String>) dataStream).setParallelism(parallelism);
 
         // Parse the input data, then toss it through the LSTM
         DataStream<FlowsWithTimestamp> flows = dataStream
@@ -114,7 +116,7 @@ public class TrafficLSTMJob {
                 });
 
         // Print the results and specify the level of parallelism
-        flows.print().setParallelism(parallelism);
+        flows.print().setParallelism(1);
 
         flows.map(new MapFunction<FlowsWithTimestamp, String>() {
             @Override
