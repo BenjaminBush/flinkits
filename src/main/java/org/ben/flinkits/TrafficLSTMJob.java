@@ -7,6 +7,7 @@ import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
+import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer011;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer011;
@@ -45,8 +46,8 @@ public class TrafficLSTMJob {
         final String producer_topic = params.get("producer_topic", "output");
 
         Properties properties = new Properties();
-        properties.setProperty("bootstrap.servers", "localhost:9092");
-        properties.setProperty("zookeeper.connect", "localhost:2181");
+        properties.setProperty("bootstrap.servers", bootstrap_servers);
+        properties.setProperty("zookeeper.connect", zookeeper_connect);
 
         // Verify that we've loaded the LSTM and print its summary
         System.out.println("Loaded lstm at " + lstm.summary());
@@ -61,9 +62,10 @@ public class TrafficLSTMJob {
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
         // get input data by connecting to Kafka
-        FlinkKafkaConsumer011<String> consumer = new FlinkKafkaConsumer011("input", new SimpleStringSchema(), properties);
-        FlinkKafkaProducer011<String> producer = new FlinkKafkaProducer011("localhost:9092", "output", new SimpleStringSchema());
+        FlinkKafkaConsumer011<String> consumer = new FlinkKafkaConsumer011(consumer_topic, new SimpleStringSchema(), properties);
+        FlinkKafkaProducer011<String> producer = new FlinkKafkaProducer011(bootstrap_servers, producer_topic, new SimpleStringSchema());
         DataStream<String> dataStream = env.addSource(consumer);
+        ((DataStreamSource<String>) dataStream).setParallelism(parallelism);
 
         // Parse the input data, then toss it through the LSTM
         DataStream<FlowsWithTimestamp> flows = dataStream
@@ -74,7 +76,7 @@ public class TrafficLSTMJob {
                         int[] actual_flows = new int[12];
                         double timestamp = Double.parseDouble(split[split.length-1]);
                         for (int i = 0; i < 12; i++) {
-                            actual_flows[i] = Integer.parseInt(split[i]);
+                            actual_flows[i] = (int) Double.parseDouble(split[i]);
                         }
                         System.out.println("Received something : " + value.toString());
                         out.collect(new FlowsWithTimestamp(actual_flows, 0, timestamp));
