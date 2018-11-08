@@ -14,11 +14,18 @@ import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer011;
 import org.apache.flink.util.Collector;
 
 // DL4J and ND4J Imports
+import org.deeplearning4j.nn.modelimport.keras.KerasModel;
 import org.deeplearning4j.nn.modelimport.keras.KerasModelImport;
+import org.deeplearning4j.nn.modelimport.keras.KerasSequentialModel;
+import org.deeplearning4j.nn.modelimport.keras.utils.KerasModelBuilder;
 import org.deeplearning4j.nn.multilayer.MultiLayerNetwork;
+import org.deeplearning4j.ui.standalone.ClassPathResource;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
+import org.tensorflow.SavedModelBundle;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.Properties;
 
 
@@ -36,8 +43,8 @@ public class TrafficLSTMJob {
         // Neural Net Configuration
         final String h5path = params.get("h5Path");
         double scale_ = params.getDouble("scale_", 0.0014925373134328358);
-        MultiLayerNetwork lstm = KerasModelImport.importKerasSequentialModelAndWeights(h5path);
-
+        double min_ = params.getDouble("min_", -0.03880597014925373);
+        MultiLayerNetwork lstm = KerasModelImport.importKerasSequentialModelAndWeights(h5path, false);
 
         // Kafka Configuration
         final String bootstrap_servers = params.get("bootstrap.servers", "localhost:9092");
@@ -50,12 +57,8 @@ public class TrafficLSTMJob {
         properties.setProperty("zookeeper.connect", zookeeper_connect);
 
         // Verify that we've loaded the LSTM and print its summary
-        System.out.println("Loaded lstm at " + lstm.summary());
+        System.out.println("LSTM summary: " + lstm.summary());
 
-        System.out.println("bootstrap.servers is " + bootstrap_servers);
-        System.out.println("zookeeper_connect is " + zookeeper_connect);
-        System.out.println("consumer_topic is " + consumer_topic);
-        System.out.println("producer_topic is " + producer_topic);
 
 
         // get the execution environment
@@ -89,29 +92,37 @@ public class TrafficLSTMJob {
                         double predicted_flow;
                         int[] shape = {12, 1};
                         INDArray ndarr;
+                        INDArray down1;
+                        INDArray down2;
+                        INDArray up1;
+                        INDArray up2;
                         INDArray output;
-                        INDArray prediction;
-
+                        List<INDArray> feedforward;
 
                         // Copy over ints to temporary double array
                         for (int i = 0; i < flowsWithTimestamp.actual_flows.length; i++) {
                             flows[i] = flowsWithTimestamp.actual_flows[i];
                         }
 
+                        System.out.println("Original is : " + Arrays.toString(flows));
+
                         // Create the INDArray and specify the shape
                         ndarr = Nd4j.create(flows, shape);
 
-                        // Multiply down so that we can predict
-                        ndarr.mul(scale_);
+                        // Scale so we can predict
+                        down1 = ndarr.mul(scale_);
+                        down2 = down1.add(min_);
 
-                        // Make the prediction (is this step working?)
-                        output = lstm.output(ndarr);
+                        // Use feedforward (not output!) and specify that we are in testing mode
+                        feedforward = lstm.feedForward(down2, false);
+                        output = feedforward.get(0);
 
                         // Scale back up
-                        prediction = output.div(scale_);
+                        up1 = output.sub(scale_);
+                        up2 = up1.div(scale_);
 
-                        // Get the right index and cast to an int
-                        predicted_flow = prediction.getDouble(11);
+                        // Get the right index
+                        predicted_flow = up2.getDouble(0);
 
                         // Create new return object, return
                         FlowsWithTimestamp ret = new FlowsWithTimestamp(flowsWithTimestamp.actual_flows, (int) predicted_flow, flowsWithTimestamp.timestamp);
