@@ -76,13 +76,14 @@ public class TrafficLSTMJob {
                     @Override
                     public void flatMap(String value, Collector<FlowsWithTimestamp> out) {
                         String[] split = value.split(";");
+                        String city = split[0];
                         int[] actual_flows = new int[12];
                         double timestamp = Double.parseDouble(split[split.length-1]);
                         for (int i = 0; i < 12; i++) {
-                            actual_flows[i] = (int) Double.parseDouble(split[i]);
+                            actual_flows[i] = (int) Double.parseDouble(split[i+1]);
                         }
                         System.out.println("Received something : " + value.toString());
-                        out.collect(new FlowsWithTimestamp(actual_flows, 0, timestamp));
+                        out.collect(new FlowsWithTimestamp(city, actual_flows, 0, timestamp));
                     }
                 })
                 .map(new MapFunction<FlowsWithTimestamp, FlowsWithTimestamp>() {
@@ -125,7 +126,7 @@ public class TrafficLSTMJob {
                         predicted_flow = up2.getDouble(0);
 
                         // Create new return object, return
-                        FlowsWithTimestamp ret = new FlowsWithTimestamp(flowsWithTimestamp.actual_flows, (int) predicted_flow, flowsWithTimestamp.timestamp);
+                        FlowsWithTimestamp ret = new FlowsWithTimestamp(flowsWithTimestamp.city, flowsWithTimestamp.actual_flows, (int) predicted_flow, flowsWithTimestamp.timestamp);
                         return ret;
                     }
                 });
@@ -150,13 +151,15 @@ public class TrafficLSTMJob {
      * Data type for flows with timestamp
      */
     public static class FlowsWithTimestamp {
+        public String city;
         public int[] actual_flows;
         public int predicted_flow;
         public double timestamp;
 
         public FlowsWithTimestamp() {}
 
-        public FlowsWithTimestamp(int[] actual_flows, int predicted_flow, double timestamp) {
+        public FlowsWithTimestamp(String city, int[] actual_flows, int predicted_flow, double timestamp) {
+            this.city = city;
             this.actual_flows = actual_flows;
             this.predicted_flow = predicted_flow;
             this.timestamp = timestamp;
@@ -165,6 +168,7 @@ public class TrafficLSTMJob {
         @Override
         public String toString() {
             StringBuilder ret = new StringBuilder();
+            ret.append(this.city + ";");
             for (int i = 0; i < this.actual_flows.length; i++) {
                 ret.append(this.actual_flows[i]);
                 ret.append(';');
