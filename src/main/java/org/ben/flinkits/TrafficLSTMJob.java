@@ -19,12 +19,19 @@ import org.deeplearning4j.nn.modelimport.keras.KerasModelImport;
 import org.deeplearning4j.nn.modelimport.keras.KerasSequentialModel;
 import org.deeplearning4j.nn.modelimport.keras.utils.KerasModelBuilder;
 import org.deeplearning4j.nn.multilayer.MultiLayerNetwork;
-import org.deeplearning4j.ui.standalone.ClassPathResource;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
-import org.tensorflow.SavedModelBundle;
+
+// JGraphT imports
+import org.jgrapht.*;
+import org.jgrapht.alg.connectivity.*;
+import org.jgrapht.alg.interfaces.ShortestPathAlgorithm.*;
+import org.jgrapht.alg.interfaces.*;
+import org.jgrapht.alg.shortestpath.*;
+import org.jgrapht.graph.*;
 
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Properties;
 
@@ -45,6 +52,45 @@ public class TrafficLSTMJob {
         double scale_ = params.getDouble("scale_", 0.0014925373134328358);
         double min_ = params.getDouble("min_", -0.03880597014925373);
         MultiLayerNetwork lstm = KerasModelImport.importKerasSequentialModelAndWeights(h5path, false);
+
+        // Graph Configuration
+        String[] cities = {"athens", "east_rancho_dominguez", "el_segundo", "long_beach", "lynwood", "wilmington"};
+        Graph<String, DefaultWeightedEdge> graph = new SimpleDirectedWeightedGraph<String, DefaultWeightedEdge>(DefaultWeightedEdge.class);
+
+        for (String city: cities) {
+            graph.addVertex(city);
+        }
+
+        DefaultWeightedEdge e1 = graph.addEdge("el_segundo", "athens");
+        graph.setEdgeWeight(e1, 4.854279482875291);
+
+        DefaultWeightedEdge e2 = graph.addEdge("el_segundo", "wilmington");
+        graph.setEdgeWeight(e2, 7.381129003403495);
+
+        DefaultWeightedEdge e3 = graph.addEdge("athens", "lynwood");
+        graph.setEdgeWeight(e3, 5.7221579249150185);
+
+        DefaultWeightedEdge e4 = graph.addEdge("wilmington", "long_beach");
+        graph.setEdgeWeight(e4, 1.8963114279968185);
+
+        DefaultWeightedEdge e5 = graph.addEdge("lynwood", "east_rancho_dominguez");
+        graph.setEdgeWeight(e5, 0.47837885698276855);
+
+        DefaultWeightedEdge e6 = graph.addEdge("east_rancho_dominguez", "long_beach");
+        graph.setEdgeWeight(e6, 0.8230426501818744);
+
+
+        // Hashmap definitions and initializations
+        HashMap<String, Double> average_speeds = new HashMap<String, Double>();
+        for (String city: cities) {
+            average_speeds.put(city, 0.0);
+        }
+
+        HashMap<String, Double> pred_flows = new HashMap<String, Double>();
+        for (String city: cities) {
+            pred_flows.put(city, 0.0);
+        }
+
 
         // Kafka Configuration
         final String bootstrap_servers = params.get("bootstrap.servers", "localhost:9092");
@@ -77,13 +123,16 @@ public class TrafficLSTMJob {
                     public void flatMap(String value, Collector<FlowsWithTimestamp> out) {
                         String[] split = value.split(";");
                         String city = split[0];
+                        String avg_speed_str = split[1];
+                        double avg_speed = Double.parseDouble(avg_speed_str);
+                        average_speeds.put(city, avg_speed);
                         int[] actual_flows = new int[12];
                         double timestamp = Double.parseDouble(split[split.length-1]);
                         for (int i = 0; i < 12; i++) {
                             actual_flows[i] = (int) Double.parseDouble(split[i+1]);
                         }
                         System.out.println("Received something : " + value.toString());
-                        out.collect(new FlowsWithTimestamp(city, actual_flows, 0, timestamp));
+                        out.collect(new FlowsWithTimestamp(city, avg_speed, actual_flows, 0, timestamp));
                     }
                 })
                 .map(new MapFunction<FlowsWithTimestamp, FlowsWithTimestamp>() {
@@ -125,8 +174,10 @@ public class TrafficLSTMJob {
                         // Get the right index
                         predicted_flow = up2.getDouble(0);
 
+                        pred_flows.put(flowsWithTimestamp.city, predicted_flow);
+
                         // Create new return object, return
-                        FlowsWithTimestamp ret = new FlowsWithTimestamp(flowsWithTimestamp.city, flowsWithTimestamp.actual_flows, (int) predicted_flow, flowsWithTimestamp.timestamp);
+                        FlowsWithTimestamp ret = new FlowsWithTimestamp(flowsWithTimestamp.city, flowsWithTimestamp.avg_speed, flowsWithTimestamp.actual_flows, (int) predicted_flow, flowsWithTimestamp.timestamp);
                         return ret;
                     }
                 });
@@ -137,7 +188,40 @@ public class TrafficLSTMJob {
         flows.map(new MapFunction<FlowsWithTimestamp, String>() {
             @Override
             public String map(FlowsWithTimestamp flowsWithTimestamp) throws Exception {
-                return flowsWithTimestamp.toString();
+                // Run AStar and then send it to Kafka
+
+
+                // Update the heuristic
+                AStarAdmissibleHeuristic<String> heuristic = new AStarAdmissibleHeuristic<String>() {
+                    @Override
+                    public double getCostEstimate(String sourceVertex, String targetVertex) {
+                        System.out.println("Source vertex is " + sourceVertex);
+                        System.out.println("Target vertex is " + targetVertex);
+                        double weight;
+                        try {
+                            DefaultWeightedEdge edge = graph.getEdge(sourceVertex, targetVertex);
+                            weight = graph.getEdgeWeight(edge);
+                        } catch (NullPointerException ne) {
+                            System.out.println("Caught a null pointer, shouldn't be here");
+                            weight = 0.0;
+                        }
+                        double speed_limit = 70.0;
+                        double avg_speed = average_speeds.get(sourceVertex);
+                        double predicted_flow = pred_flows.get(sourceVertex);
+                        return Math.min(0, Math.min(weight, (70-avg_speed)*predicted_flow));
+                    }
+                };
+
+                // Run AStar
+                AStarShortestPath<String, DefaultWeightedEdge> astar = new AStarShortestPath<String, DefaultWeightedEdge>(graph, heuristic);
+                GraphPath sp = astar.getPath("el_segundo", "long_beach");
+
+
+                // Send the data
+                String fwt = flowsWithTimestamp.toString();
+                String path = sp.toString();
+                String ret = fwt + ";" + path;
+                return ret;
             }
         }).addSink(producer);
 
@@ -152,14 +236,16 @@ public class TrafficLSTMJob {
      */
     public static class FlowsWithTimestamp {
         public String city;
+        public double avg_speed;
         public int[] actual_flows;
         public int predicted_flow;
         public double timestamp;
 
         public FlowsWithTimestamp() {}
 
-        public FlowsWithTimestamp(String city, int[] actual_flows, int predicted_flow, double timestamp) {
+        public FlowsWithTimestamp(String city, double avg_speed, int[] actual_flows, int predicted_flow, double timestamp) {
             this.city = city;
+            this.avg_speed = avg_speed;
             this.actual_flows = actual_flows;
             this.predicted_flow = predicted_flow;
             this.timestamp = timestamp;
@@ -169,6 +255,7 @@ public class TrafficLSTMJob {
         public String toString() {
             StringBuilder ret = new StringBuilder();
             ret.append(this.city + ";");
+            ret.append(this.avg_speed + ";");
             for (int i = 0; i < this.actual_flows.length; i++) {
                 ret.append(this.actual_flows[i]);
                 ret.append(';');
