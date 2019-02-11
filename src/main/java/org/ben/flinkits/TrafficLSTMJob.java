@@ -61,6 +61,8 @@ public class TrafficLSTMJob {
             graph.addVertex(city);
         }
 
+        // Specify the true distance between edges. Calculated using latitude + longitude and curvature of Earth
+
         DefaultWeightedEdge e1 = graph.addEdge("el_segundo", "athens");
         graph.setEdgeWeight(e1, 4.854279482875291);
 
